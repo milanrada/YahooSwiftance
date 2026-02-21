@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: macos-14
+    strategy:
+      matrix:
+        swift: ['5.9', '5.10']
+    name: Swift ${{ matrix.swift }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Swift version
+        run: |
+          if [ "${{ matrix.swift }}" = "5.10" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app
+          else
+            sudo xcode-select -s /Applications/Xcode_15.2.app
+          fi
+          swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Run tests
+        run: swift test
