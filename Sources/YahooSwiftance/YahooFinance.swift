@@ -1,5 +1,8 @@
 import Foundation
 
+/// The current semantic version of the YahooSwiftance library.
+public let version = "0.1.0"
+
 /// The main entry point for the YahooSwiftance library.
 ///
 /// Provides both real-time WebSocket streaming and REST API access to Yahoo Finance data.
