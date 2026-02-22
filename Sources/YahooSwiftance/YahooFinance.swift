@@ -1,7 +1,7 @@
 import Foundation
 
 /// The current semantic version of the YahooSwiftance library.
-public let version = "0.1.0"
+public let version = "0.2.0"
 
 /// The main entry point for the YahooSwiftance library.
 ///
@@ -34,9 +34,14 @@ public final class YahooFinance: Sendable {
 
     /// Stream real-time quotes for the given symbols via WebSocket.
     ///
+    /// Use `.throttle(_:)` on the returned sequence to control emission rate:
+    /// ```swift
+    /// for try await quote in await yahoo.stream(symbols: ["AAPL"]).throttle(.everySecond) { ... }
+    /// ```
+    ///
     /// - Parameter symbols: Ticker symbols to stream (e.g., `["AAPL", "GOOGL"]`).
-    /// - Returns: An `AsyncThrowingStream` that yields `StreamQuote` values.
-    public func stream(symbols: [String]) async -> AsyncThrowingStream<StreamQuote, Error> {
+    /// - Returns: A `QuoteSequence` that yields `StreamQuote` values.
+    public func stream(symbols: [String]) async -> QuoteSequence {
         await streamer.stream(symbols: symbols)
     }
 

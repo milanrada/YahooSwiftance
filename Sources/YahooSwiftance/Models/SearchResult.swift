@@ -18,9 +18,3 @@ public struct SearchResult: Sendable, Equatable, Codable {
         case industry
     }
 }
-
-// MARK: - Internal Codable Wrapper
-
-struct SearchResponse: Codable {
-    let quotes: [SearchResult]?
-}

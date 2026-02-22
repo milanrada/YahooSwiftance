@@ -18,9 +18,19 @@ public actor StockStreamer {
 
     /// Stream real-time quotes for the given symbols.
     ///
-    /// Returns an `AsyncThrowingStream` that yields `StreamQuote` values as they arrive.
+    /// Returns a `QuoteSequence` that yields `StreamQuote` values as they arrive.
     /// The stream is terminated when `disconnect()` is called or the WebSocket drops.
-    public func stream(symbols: [String]) -> AsyncThrowingStream<StreamQuote, Error> {
+    ///
+    /// Use `.throttle(_:)` on the returned sequence to control emission rate:
+    /// ```swift
+    /// for try await quote in streamer.stream(symbols: ["AAPL"]).throttle(.everySecond) { ... }
+    /// ```
+    ///
+    /// - Parameter symbols: Ticker symbols to stream (e.g., `["AAPL", "GOOGL"]`).
+    public func stream(symbols: [String]) -> QuoteSequence {
+        // Tear down any existing connection before opening a new one
+        disconnect()
+
         let task = createWebSocketTask()
         self.webSocketTask = task
 
@@ -33,7 +43,7 @@ public actor StockStreamer {
             await self.startHeartbeat()
         }
 
-        return quoteStream
+        return QuoteSequence(base: quoteStream)
     }
 
     /// Subscribe to additional symbols on the existing connection.
@@ -73,7 +83,7 @@ public actor StockStreamer {
 
     private func sendSubscribe(symbols: [String]) async {
         subscribedSymbols.formUnion(symbols)
-        let message: [String: [String]] = ["subscribe": Array(subscribedSymbols)]
+        let message: [String: [String]] = ["subscribe": symbols]
         guard let data = try? JSONSerialization.data(withJSONObject: message),
               let json = String(data: data, encoding: .utf8) else { return }
         try? await webSocketTask?.send(.string(json))
@@ -86,17 +96,23 @@ public actor StockStreamer {
         try? await webSocketTask?.send(.string(json))
     }
 
+    private func sendKeepAlive() async {
+        guard !subscribedSymbols.isEmpty else { return }
+        let message: [String: [String]] = ["subscribe": Array(subscribedSymbols)]
+        guard let data = try? JSONSerialization.data(withJSONObject: message),
+              let json = String(data: data, encoding: .utf8) else { return }
+        try? await webSocketTask?.send(.string(json))
+    }
+
     private func startHeartbeat() {
         heartbeatTask?.cancel()
         heartbeatTask = Task { [weak self] in
+            guard let self else { return }
+
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 15_000_000_000) // 15 seconds
-                guard !Task.isCancelled, let self else { return }
-                // Re-send subscribe to keep connection alive
-                let symbols = await self.subscribedSymbols
-                if !symbols.isEmpty {
-                    await self.sendSubscribe(symbols: Array(symbols))
-                }
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled else { return }
+                await self.sendKeepAlive()
             }
         }
     }

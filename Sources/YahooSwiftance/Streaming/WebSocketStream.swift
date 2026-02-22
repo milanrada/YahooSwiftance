@@ -12,7 +12,9 @@ enum WebSocketStream {
                 task.cancel(with: .goingAway, reason: nil)
             }
             task.resume()
-            Task { await receiver.startReceiving() }
+            Task {
+                await receiver.startReceiving()
+            }
         }
     }
 }

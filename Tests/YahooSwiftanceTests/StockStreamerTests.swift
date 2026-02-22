@@ -42,6 +42,243 @@ final class StockStreamerTests: XCTestCase {
         XCTAssertNil(MarketHours(rawValue: "UNKNOWN"))
     }
 
+    // MARK: - StreamFrequency
+
+    func testStreamFrequencyIntervalRealtime() {
+        XCTAssertNil(StreamFrequency.realtime.interval)
+    }
+
+    func testStreamFrequencyIntervalMillis() {
+        XCTAssertEqual(StreamFrequency.millis(500).interval!, 0.5, accuracy: 0.001)
+        XCTAssertEqual(StreamFrequency.millis(100).interval!, 0.1, accuracy: 0.001)
+        XCTAssertEqual(StreamFrequency.millis(1000).interval!, 1.0, accuracy: 0.001)
+    }
+
+    func testStreamFrequencyIntervalSeconds() {
+        XCTAssertEqual(StreamFrequency.seconds(2.5).interval!, 2.5, accuracy: 0.001)
+        XCTAssertEqual(StreamFrequency.seconds(0.1).interval!, 0.1, accuracy: 0.001)
+    }
+
+    func testStreamFrequencyIntervalConvenience() {
+        XCTAssertEqual(StreamFrequency.everySecond.interval!, 1.0, accuracy: 0.001)
+        XCTAssertEqual(StreamFrequency.everyFiveSeconds.interval!, 5.0, accuracy: 0.001)
+    }
+
+    // MARK: - ThrottledQuoteSequence
+
+    func testThrottleRealtimePassesAllQuotes() async throws {
+        let quotes = [
+            StreamQuote(symbol: "AAPL", price: 150.0, timestamp: Date()),
+            StreamQuote(symbol: "AAPL", price: 151.0, timestamp: Date()),
+            StreamQuote(symbol: "AAPL", price: 152.0, timestamp: Date()),
+        ]
+
+        let stream = AsyncThrowingStream<StreamQuote, Error> { continuation in
+            for q in quotes { continuation.yield(q) }
+            continuation.finish()
+        }
+
+        let sequence = QuoteSequence(base: stream)
+        var received: [StreamQuote] = []
+        for try await quote in sequence {
+            received.append(quote)
+        }
+
+        XCTAssertEqual(received.count, 3)
+        XCTAssertEqual(received.map(\.price), [150.0, 151.0, 152.0])
+    }
+
+    func testThrottleFiltersRapidQuotes() async throws {
+        let stream = AsyncThrowingStream<StreamQuote, Error> { continuation in
+            // Emit 5 quotes for AAPL with no delay — only the first should pass
+            for i in 0..<5 {
+                let q = StreamQuote(symbol: "AAPL", price: Double(150 + i), timestamp: Date())
+                continuation.yield(q)
+            }
+            continuation.finish()
+        }
+
+        let throttled = QuoteSequence(base: stream).throttle(.seconds(10))
+        var received: [StreamQuote] = []
+        for try await quote in throttled {
+            received.append(quote)
+        }
+
+        // With a 10-second throttle and instant emission, only the first should pass
+        XCTAssertEqual(received.count, 1)
+        XCTAssertEqual(received.first?.price, 150.0)
+    }
+
+    func testThrottlePerSymbol() async throws {
+        let stream = AsyncThrowingStream<StreamQuote, Error> { continuation in
+            // Alternate between two symbols — each symbol's first quote should pass
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 150.0, timestamp: Date()))
+            continuation.yield(StreamQuote(symbol: "GOOGL", price: 140.0, timestamp: Date()))
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 151.0, timestamp: Date()))
+            continuation.yield(StreamQuote(symbol: "GOOGL", price: 141.0, timestamp: Date()))
+            continuation.finish()
+        }
+
+        let throttled = QuoteSequence(base: stream).throttle(.seconds(10))
+        var received: [StreamQuote] = []
+        for try await quote in throttled {
+            received.append(quote)
+        }
+
+        // Only the first quote per symbol should pass through
+        XCTAssertEqual(received.count, 2)
+        XCTAssertEqual(received[0].symbol, "AAPL")
+        XCTAssertEqual(received[0].price, 150.0)
+        XCTAssertEqual(received[1].symbol, "GOOGL")
+        XCTAssertEqual(received[1].price, 140.0)
+    }
+
+    // MARK: - PriceFilteredQuoteSequence
+
+    func testPriceFilterAbsolutePassesFirstQuote() async throws {
+        let stream = AsyncThrowingStream<StreamQuote, Error> { continuation in
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 150.0, timestamp: Date()))
+            continuation.finish()
+        }
+
+        let filtered = QuoteSequence(base: stream).filter(minimumChange: .absolute(1.0))
+        var received: [StreamQuote] = []
+        for try await quote in filtered {
+            received.append(quote)
+        }
+
+        XCTAssertEqual(received.count, 1)
+        XCTAssertEqual(received.first?.price, 150.0)
+    }
+
+    func testPriceFilterAbsoluteSkipsSmallMoves() async throws {
+        let stream = AsyncThrowingStream<StreamQuote, Error> { continuation in
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 150.0, timestamp: Date()))
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 150.3, timestamp: Date()))
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 150.5, timestamp: Date()))
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 152.0, timestamp: Date()))
+            continuation.finish()
+        }
+
+        let filtered = QuoteSequence(base: stream).filter(minimumChange: .absolute(1.0))
+        var received: [StreamQuote] = []
+        for try await quote in filtered {
+            received.append(quote)
+        }
+
+        // First (150.0) always passes, 150.3 and 150.5 are within $1, 152.0 exceeds $1
+        XCTAssertEqual(received.count, 2)
+        XCTAssertEqual(received.map(\.price), [150.0, 152.0])
+    }
+
+    func testPriceFilterPercentSkipsSmallMoves() async throws {
+        let stream = AsyncThrowingStream<StreamQuote, Error> { continuation in
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 100.0, timestamp: Date()))
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 100.4, timestamp: Date())) // 0.4%
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 100.9, timestamp: Date())) // 0.9%
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 102.0, timestamp: Date())) // 2.0%
+            continuation.finish()
+        }
+
+        let filtered = QuoteSequence(base: stream).filter(minimumChange: .percent(1.0))
+        var received: [StreamQuote] = []
+        for try await quote in filtered {
+            received.append(quote)
+        }
+
+        // First (100.0) always passes, 100.4 and 100.9 are within 1%, 102.0 exceeds 1%
+        XCTAssertEqual(received.count, 2)
+        XCTAssertEqual(received.map(\.price), [100.0, 102.0])
+    }
+
+    func testPriceFilterPerSymbol() async throws {
+        let stream = AsyncThrowingStream<StreamQuote, Error> { continuation in
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 150.0, timestamp: Date()))
+            continuation.yield(StreamQuote(symbol: "GOOGL", price: 140.0, timestamp: Date()))
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 150.3, timestamp: Date())) // skip
+            continuation.yield(StreamQuote(symbol: "GOOGL", price: 145.0, timestamp: Date())) // pass
+            continuation.finish()
+        }
+
+        let filtered = QuoteSequence(base: stream).filter(minimumChange: .absolute(1.0))
+        var received: [StreamQuote] = []
+        for try await quote in filtered {
+            received.append(quote)
+        }
+
+        // AAPL: 150.0 passes, 150.3 skipped (within $1)
+        // GOOGL: 140.0 passes, 145.0 passes (exceeds $1)
+        XCTAssertEqual(received.count, 3)
+        XCTAssertEqual(received.map(\.symbol), ["AAPL", "GOOGL", "GOOGL"])
+        XCTAssertEqual(received.map(\.price), [150.0, 140.0, 145.0])
+    }
+
+    func testPriceFilterComparesAgainstLastEmitted() async throws {
+        let stream = AsyncThrowingStream<StreamQuote, Error> { continuation in
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 100.0, timestamp: Date()))
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 100.3, timestamp: Date())) // skip (vs 100.0)
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 100.8, timestamp: Date())) // skip (vs 100.0)
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 101.5, timestamp: Date())) // pass (vs 100.0)
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 101.8, timestamp: Date())) // skip (vs 101.5)
+            continuation.finish()
+        }
+
+        let filtered = QuoteSequence(base: stream).filter(minimumChange: .absolute(1.0))
+        var received: [StreamQuote] = []
+        for try await quote in filtered {
+            received.append(quote)
+        }
+
+        // Comparison is always against last *emitted* price, not last seen price
+        XCTAssertEqual(received.count, 2)
+        XCTAssertEqual(received.map(\.price), [100.0, 101.5])
+    }
+
+    func testPriceFilterChainedWithThrottle() async throws {
+        // Verify chaining compiles and works: throttle then filter
+        let stream = AsyncThrowingStream<StreamQuote, Error> { continuation in
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 150.0, timestamp: Date()))
+            continuation.yield(StreamQuote(symbol: "AAPL", price: 155.0, timestamp: Date()))
+            continuation.finish()
+        }
+
+        let chained = QuoteSequence(base: stream)
+            .filter(minimumChange: .absolute(1.0))
+            .throttle(.realtime)
+        var received: [StreamQuote] = []
+        for try await quote in chained {
+            received.append(quote)
+        }
+
+        XCTAssertEqual(received.count, 2)
+    }
+
+    // MARK: - PriceThreshold
+
+    func testPriceThresholdAbsolute() {
+        let threshold = PriceThreshold.absolute(1.0)
+        XCTAssertFalse(threshold.isExceeded(previous: 100.0, current: 100.5))
+        XCTAssertFalse(threshold.isExceeded(previous: 100.0, current: 101.0))
+        XCTAssertTrue(threshold.isExceeded(previous: 100.0, current: 101.5))
+        XCTAssertTrue(threshold.isExceeded(previous: 100.0, current: 98.5))
+    }
+
+    func testPriceThresholdPercent() {
+        let threshold = PriceThreshold.percent(1.0)
+        XCTAssertFalse(threshold.isExceeded(previous: 100.0, current: 100.5))
+        XCTAssertFalse(threshold.isExceeded(previous: 100.0, current: 101.0))
+        XCTAssertTrue(threshold.isExceeded(previous: 100.0, current: 101.5))
+        XCTAssertTrue(threshold.isExceeded(previous: 100.0, current: 98.0))
+    }
+
+    func testPriceThresholdPercentZeroPrevious() {
+        let threshold = PriceThreshold.percent(1.0)
+        // When previous is 0, any move should exceed
+        XCTAssertTrue(threshold.isExceeded(previous: 0.0, current: 1.0))
+    }
+
+    // MARK: - Protobuf (all fields)
+
     func testProtobufWithAllFields() throws {
         var data = Data()
 
