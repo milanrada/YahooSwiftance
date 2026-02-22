@@ -3,7 +3,7 @@ import Foundation
 /// A protocol for `AsyncSequence` types that emit `StreamQuote` elements.
 ///
 /// Conforming types automatically gain chainable operators like `.throttle(_:)`.
-public protocol QuoteAsyncSequence: AsyncSequence, Sendable where Element == StreamQuote {}
+public protocol QuoteAsyncSequence: AsyncSequence, Sendable where Element == StreamQuote, Failure == any Error {}
 
 extension QuoteAsyncSequence {
     /// Returns a throttled sequence that emits at most one quote per symbol

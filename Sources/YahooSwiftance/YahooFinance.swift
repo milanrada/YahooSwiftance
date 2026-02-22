@@ -1,7 +1,7 @@
 import Foundation
 
 /// The current semantic version of the YahooSwiftance library.
-public let version = "0.2.0"
+public let version = "0.3.0"
 
 /// The main entry point for the YahooSwiftance library.
 ///
