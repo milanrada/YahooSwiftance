@@ -17,11 +17,17 @@ func formatNumber(_ n: Int64) -> String {
 let yahoo = YahooFinance()
 let symbols = ["AAPL", "GOOGL", "MSFT", "AMZN", "TSLA"]
 
+let stream = try await yahoo.stream(symbols: symbols)
+
+if !stream.invalidSymbols.isEmpty {
+    print("Warning: could not find symbols: \(stream.invalidSymbols.joined(separator: ", "))")
+}
+
 print("Streaming real-time quotes for: \(symbols.joined(separator: ", "))")
 print("Throttled to one update per symbol per second.")
 print("Press Ctrl+C to stop.\n")
 
-for try await quote in await yahoo.stream(symbols: symbols).throttle(.everySecond) {
+for try await quote in stream.throttle(.everySecond) {
     let change = quote.changePercent.map { String(format: "%+.2f%%", $0) } ?? "N/A"
     let volume = quote.dayVolume.map { formatNumber($0) } ?? "N/A"
     let hours = quote.marketHours?.rawValue ?? "—"

@@ -1,7 +1,8 @@
 import Foundation
+import Synchronization
 
 /// The current semantic version of the YahooSwiftance library.
-public let version = "0.3.0"
+public let version = "0.4.0"
 
 /// The main entry point for the YahooSwiftance library.
 ///
@@ -21,6 +22,7 @@ public let version = "0.3.0"
 public final class YahooFinance: Sendable {
     private let httpClient: HTTPClient
     private let streamer: StockStreamer
+    private let validSymbolCache = Mutex<Set<String>>([])
 
     /// Creates a new `YahooFinance` instance.
     ///
@@ -34,20 +36,53 @@ public final class YahooFinance: Sendable {
 
     /// Stream real-time quotes for the given symbols via WebSocket.
     ///
-    /// Use `.throttle(_:)` on the returned sequence to control emission rate:
+    /// Each symbol is validated against the Yahoo Finance API before the WebSocket
+    /// connection is opened. Invalid symbols are reported via ``ValidatedStream/invalidSymbols``
+    /// rather than silently producing no quotes.
+    ///
+    /// - If **all** symbols are invalid, throws ``YahooFinanceError/invalidSymbols(_:)``.
+    /// - If **some** are invalid, streams the valid ones and populates `invalidSymbols`.
+    /// - If **all** are valid, `invalidSymbols` is empty.
+    ///
     /// ```swift
-    /// for try await quote in await yahoo.stream(symbols: ["AAPL"]).throttle(.everySecond) { ... }
+    /// let stream = try await yahoo.stream(symbols: ["AAPL", "AAZN", "GOOGL"])
+    /// if !stream.invalidSymbols.isEmpty {
+    ///     print("Warning: \(stream.invalidSymbols) not found")
+    /// }
+    /// for try await quote in stream.throttle(.everySecond) { ... }
     /// ```
     ///
     /// - Parameter symbols: Ticker symbols to stream (e.g., `["AAPL", "GOOGL"]`).
-    /// - Returns: A `QuoteSequence` that yields `StreamQuote` values.
-    public func stream(symbols: [String]) async -> QuoteSequence {
-        await streamer.stream(symbols: symbols)
+    /// - Returns: A ``ValidatedStream`` that yields `StreamQuote` values.
+    public func stream(symbols: [String]) async throws -> ValidatedStream {
+        let (valid, invalid) = await validateSymbols(symbols)
+
+        guard !valid.isEmpty else {
+            throw YahooFinanceError.invalidSymbols(invalid)
+        }
+
+        let sequence = try await streamer.stream(symbols: valid)
+        return ValidatedStream(base: sequence, invalidSymbols: invalid)
     }
 
     /// Subscribe to additional symbols on the existing WebSocket connection.
-    public func subscribe(symbols: [String]) async {
-        await streamer.subscribe(symbols: symbols)
+    ///
+    /// Each symbol is validated before being sent to the WebSocket.
+    /// Already-validated symbols are served from an in-memory cache.
+    ///
+    /// - Parameter symbols: Ticker symbols to subscribe to.
+    /// - Returns: Symbols that could not be found on Yahoo Finance. Empty when all are valid.
+    /// - Throws: ``YahooFinanceError/invalidSymbols(_:)`` if **all** symbols are invalid.
+    @discardableResult
+    public func subscribe(symbols: [String]) async throws -> [String] {
+        let (valid, invalid) = await validateSymbols(symbols)
+
+        guard !valid.isEmpty else {
+            throw YahooFinanceError.invalidSymbols(invalid)
+        }
+
+        await streamer.subscribe(symbols: valid)
+        return invalid
     }
 
     /// Unsubscribe from symbols on the existing WebSocket connection.
@@ -126,5 +161,41 @@ public final class YahooFinance: Sendable {
         }
 
         return result.toChartData()
+    }
+
+    // MARK: - Validation
+
+    private func validateSymbols(_ symbols: [String]) async -> (valid: [String], invalid: [String]) {
+        let cached = validSymbolCache.withLock { $0 }
+        let unchecked = symbols.filter { !cached.contains($0) }
+
+        var valid = symbols.filter { cached.contains($0) }
+        var invalid: [String] = []
+
+        if !unchecked.isEmpty {
+            await withTaskGroup(of: (String, Bool).self) { group in
+                for symbol in unchecked {
+                    group.addTask {
+                        do {
+                            _ = try await self.quote(for: symbol)
+                            return (symbol, true)
+                        } catch {
+                            return (symbol, false)
+                        }
+                    }
+                }
+
+                for await (symbol, isValid) in group {
+                    if isValid { valid.append(symbol) }
+                    else { invalid.append(symbol) }
+                }
+            }
+
+            if !valid.isEmpty {
+                validSymbolCache.withLock { $0.formUnion(valid) }
+            }
+        }
+
+        return (valid, invalid)
     }
 }

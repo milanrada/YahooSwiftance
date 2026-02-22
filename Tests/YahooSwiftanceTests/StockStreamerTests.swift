@@ -78,7 +78,7 @@ final class StockStreamerTests: XCTestCase {
             continuation.finish()
         }
 
-        let sequence = QuoteSequence(base: stream)
+        let sequence = try QuoteSequence(base: stream)
         var received: [StreamQuote] = []
         for try await quote in sequence {
             received.append(quote)
@@ -98,7 +98,7 @@ final class StockStreamerTests: XCTestCase {
             continuation.finish()
         }
 
-        let throttled = QuoteSequence(base: stream).throttle(.seconds(10))
+        let throttled = try QuoteSequence(base: stream).throttle(.seconds(10))
         var received: [StreamQuote] = []
         for try await quote in throttled {
             received.append(quote)
@@ -119,7 +119,7 @@ final class StockStreamerTests: XCTestCase {
             continuation.finish()
         }
 
-        let throttled = QuoteSequence(base: stream).throttle(.seconds(10))
+        let throttled = try QuoteSequence(base: stream).throttle(.seconds(10))
         var received: [StreamQuote] = []
         for try await quote in throttled {
             received.append(quote)
@@ -141,7 +141,7 @@ final class StockStreamerTests: XCTestCase {
             continuation.finish()
         }
 
-        let filtered = QuoteSequence(base: stream).filter(minimumChange: .absolute(1.0))
+        let filtered = try QuoteSequence(base: stream).filter(minimumChange: .absolute(1.0))
         var received: [StreamQuote] = []
         for try await quote in filtered {
             received.append(quote)
@@ -160,7 +160,7 @@ final class StockStreamerTests: XCTestCase {
             continuation.finish()
         }
 
-        let filtered = QuoteSequence(base: stream).filter(minimumChange: .absolute(1.0))
+        let filtered = try QuoteSequence(base: stream).filter(minimumChange: .absolute(1.0))
         var received: [StreamQuote] = []
         for try await quote in filtered {
             received.append(quote)
@@ -180,7 +180,7 @@ final class StockStreamerTests: XCTestCase {
             continuation.finish()
         }
 
-        let filtered = QuoteSequence(base: stream).filter(minimumChange: .percent(1.0))
+        let filtered = try QuoteSequence(base: stream).filter(minimumChange: .percent(1.0))
         var received: [StreamQuote] = []
         for try await quote in filtered {
             received.append(quote)
@@ -200,7 +200,7 @@ final class StockStreamerTests: XCTestCase {
             continuation.finish()
         }
 
-        let filtered = QuoteSequence(base: stream).filter(minimumChange: .absolute(1.0))
+        let filtered = try QuoteSequence(base: stream).filter(minimumChange: .absolute(1.0))
         var received: [StreamQuote] = []
         for try await quote in filtered {
             received.append(quote)
@@ -223,7 +223,7 @@ final class StockStreamerTests: XCTestCase {
             continuation.finish()
         }
 
-        let filtered = QuoteSequence(base: stream).filter(minimumChange: .absolute(1.0))
+        let filtered = try QuoteSequence(base: stream).filter(minimumChange: .absolute(1.0))
         var received: [StreamQuote] = []
         for try await quote in filtered {
             received.append(quote)
@@ -242,7 +242,7 @@ final class StockStreamerTests: XCTestCase {
             continuation.finish()
         }
 
-        let chained = QuoteSequence(base: stream)
+        let chained = try QuoteSequence(base: stream)
             .filter(minimumChange: .absolute(1.0))
             .throttle(.realtime)
         var received: [StreamQuote] = []
@@ -275,6 +275,107 @@ final class StockStreamerTests: XCTestCase {
         let threshold = PriceThreshold.percent(1.0)
         // When previous is 0, any move should exceed
         XCTAssertTrue(threshold.isExceeded(previous: 0.0, current: 1.0))
+    }
+
+    // MARK: - ValidatedStream
+
+    func testValidatedStreamForwardsIteration() async throws {
+        let quotes = [
+            StreamQuote(symbol: "AAPL", price: 150.0, timestamp: Date()),
+            StreamQuote(symbol: "GOOGL", price: 140.0, timestamp: Date()),
+        ]
+
+        let stream = AsyncThrowingStream<StreamQuote, Error> { continuation in
+            for q in quotes { continuation.yield(q) }
+            continuation.finish()
+        }
+
+        let base = try QuoteSequence(base: stream)
+        let validated = ValidatedStream(base: base, invalidSymbols: ["AAZN"])
+
+        var received: [StreamQuote] = []
+        for try await quote in validated {
+            received.append(quote)
+        }
+
+        XCTAssertEqual(received.count, 2)
+        XCTAssertEqual(received.map(\.symbol), ["AAPL", "GOOGL"])
+        XCTAssertEqual(received.map(\.price), [150.0, 140.0])
+    }
+
+    func testValidatedStreamExposesInvalidSymbols() throws {
+        let stream = AsyncThrowingStream<StreamQuote, Error> { $0.finish() }
+        let base = try QuoteSequence(base: stream)
+
+        let validated = ValidatedStream(base: base, invalidSymbols: ["AAZN", "XYZ"])
+        XCTAssertEqual(validated.invalidSymbols, ["AAZN", "XYZ"])
+    }
+
+    func testValidatedStreamEmptyInvalidSymbols() throws {
+        let stream = AsyncThrowingStream<StreamQuote, Error> { $0.finish() }
+        let base = try QuoteSequence(base: stream)
+
+        let validated = ValidatedStream(base: base, invalidSymbols: [])
+        XCTAssertTrue(validated.invalidSymbols.isEmpty)
+    }
+
+    func testValidatedStreamThrottleChaining() async throws {
+        let quotes = [
+            StreamQuote(symbol: "AAPL", price: 150.0, timestamp: Date()),
+            StreamQuote(symbol: "AAPL", price: 151.0, timestamp: Date()),
+            StreamQuote(symbol: "AAPL", price: 152.0, timestamp: Date()),
+        ]
+
+        let stream = AsyncThrowingStream<StreamQuote, Error> { continuation in
+            for q in quotes { continuation.yield(q) }
+            continuation.finish()
+        }
+
+        let base = try QuoteSequence(base: stream)
+        let validated = ValidatedStream(base: base, invalidSymbols: [])
+
+        // Chain .throttle() on ValidatedStream — should compile and work
+        var received: [StreamQuote] = []
+        for try await quote in validated.throttle(.seconds(10)) {
+            received.append(quote)
+        }
+
+        // With 10-second throttle and instant emission, only first per symbol passes
+        XCTAssertEqual(received.count, 1)
+        XCTAssertEqual(received.first?.price, 150.0)
+    }
+
+    func testValidatedStreamFilterChaining() async throws {
+        let quotes = [
+            StreamQuote(symbol: "AAPL", price: 150.0, timestamp: Date()),
+            StreamQuote(symbol: "AAPL", price: 150.3, timestamp: Date()),
+            StreamQuote(symbol: "AAPL", price: 155.0, timestamp: Date()),
+        ]
+
+        let stream = AsyncThrowingStream<StreamQuote, Error> { continuation in
+            for q in quotes { continuation.yield(q) }
+            continuation.finish()
+        }
+
+        let base = try QuoteSequence(base: stream)
+        let validated = ValidatedStream(base: base, invalidSymbols: ["BAD"])
+
+        // Chain .filter(minimumChange:) on ValidatedStream
+        var received: [StreamQuote] = []
+        for try await quote in validated.filter(minimumChange: .absolute(1.0)) {
+            received.append(quote)
+        }
+
+        // 150.0 passes (first), 150.3 skipped (within $1), 155.0 passes
+        XCTAssertEqual(received.count, 2)
+        XCTAssertEqual(received.map(\.price), [150.0, 155.0])
+    }
+
+    // MARK: - YahooFinanceError.invalidSymbols
+
+    func testInvalidSymbolsErrorDescription() {
+        let error = YahooFinanceError.invalidSymbols(["AAZN", "XYZ"])
+        XCTAssertEqual(error.errorDescription, "Invalid symbols: AAZN, XYZ")
     }
 
     // MARK: - Protobuf (all fields)

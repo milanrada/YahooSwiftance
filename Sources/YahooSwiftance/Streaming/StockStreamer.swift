@@ -27,7 +27,7 @@ public actor StockStreamer {
     /// ```
     ///
     /// - Parameter symbols: Ticker symbols to stream (e.g., `["AAPL", "GOOGL"]`).
-    public func stream(symbols: [String]) -> QuoteSequence {
+    public func stream(symbols: [String]) throws -> QuoteSequence {
         // Tear down any existing connection before opening a new one
         disconnect()
 
@@ -43,7 +43,7 @@ public actor StockStreamer {
             await self.startHeartbeat()
         }
 
-        return QuoteSequence(base: quoteStream)
+        return try QuoteSequence(base: quoteStream)
     }
 
     /// Subscribe to additional symbols on the existing connection.

@@ -14,7 +14,7 @@ public struct QuoteSequence: QuoteAsyncSequence {
 
     private let base: AsyncThrowingStream<StreamQuote, Error>
 
-    init(base: AsyncThrowingStream<StreamQuote, Error>) {
+    init(base: AsyncThrowingStream<StreamQuote, Error>) throws {
         self.base = base
     }
 

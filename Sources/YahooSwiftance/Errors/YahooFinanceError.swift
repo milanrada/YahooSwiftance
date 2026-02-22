@@ -10,6 +10,7 @@ public enum YahooFinanceError: Error, Sendable, LocalizedError {
     case webSocketDisconnected
     case symbolNotFound(String)
     case cancelled
+    case invalidSymbols([String])
     case unknown(String)
 
     public var errorDescription: String? {
@@ -28,6 +29,8 @@ public enum YahooFinanceError: Error, Sendable, LocalizedError {
             return "WebSocket disconnected"
         case .symbolNotFound(let symbol):
             return "Symbol not found: \(symbol)"
+        case .invalidSymbols(let symbols):
+            return "Invalid symbols: \(symbols.joined(separator: ", "))"
         case .cancelled:
             return "Operation was cancelled"
         case .unknown(let message):
