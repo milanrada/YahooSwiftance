@@ -26,6 +26,7 @@ if !stream.invalidSymbols.isEmpty {
 print("Streaming real-time quotes for: \(symbols.joined(separator: ", "))")
 print("Throttled to one update per symbol per second.")
 print("Press Ctrl+C to stop.\n")
+fflush(stdout)
 
 for try await quote in stream.throttle(.everySecond) {
     let change = quote.changePercent.map { String(format: "%+.2f%%", $0) } ?? "N/A"
@@ -33,4 +34,5 @@ for try await quote in stream.throttle(.everySecond) {
     let hours = quote.marketHours?.rawValue ?? "—"
 
     print("[\(hours)] \(quote.symbol): $\(String(format: "%.2f", quote.price))  \(change)  vol: \(volume)")
+    fflush(stdout)
 }

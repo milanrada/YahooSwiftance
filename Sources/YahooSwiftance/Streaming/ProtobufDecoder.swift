@@ -130,32 +130,32 @@ struct ProtobufDecoder {
 
     // MARK: - Yahoo Finance Quote Decoding
 
-    /// Yahoo Finance streaming protobuf field numbers (reverse-engineered schema):
-    ///  1: symbol (string)
-    ///  2: price (float)
-    ///  3: timestamp (sint64 — seconds since epoch)
-    ///  4: currency (string)
-    ///  5: exchange (string)
-    ///  6: market hours (string: "PRE", "REGULAR", "POST", "CLOSED")
-    ///  7: change percent (float)
-    ///  8: day volume (sint64)
-    ///  9: day high (float)
-    /// 10: day low (float)
-    /// 11: change (float)
-    /// 12: short name (string)
-    /// 13: previous close (float)
-    /// 14: bid (float)
-    /// 15: ask (float)
-    /// 16: bid size (sint64)
-    /// 17: ask size (sint64)
-    /// 18: market cap (sint64)
+    /// Yahoo Finance streaming protobuf field numbers (reverse-engineered schema).
+    ///
+    /// The decoder is wire-type aware: each field is matched by *both* field number
+    /// and wire type so schema changes (e.g. string → varint) don't corrupt the parse.
+    ///
+    ///  1: symbol (LEN/string)
+    ///  2: price (I32/float)
+    ///  3: timestamp (VARINT — zigzag, milliseconds since epoch)
+    ///  4: currency (LEN/string)
+    ///  5: exchange (LEN/string)
+    ///  6: market hours (VARINT — enum)
+    ///  8: change percent (I32/float)
+    ///  9: day volume (VARINT — zigzag)
+    /// 10: day high (I32/float)
+    /// 11: day low (I32/float)
+    /// 12: change (I32/float)
+    /// 15: previous close (I32/float)
+    /// 30: short name (LEN/string)
+    /// 33: market cap (I64/double)
     mutating func decodeStreamQuote() throws -> StreamQuote {
         var symbol: String?
         var price: Float?
-        var timestamp: Int64?
+        var timestampMs: Int64?
         var currency: String?
         var exchange: String?
-        var marketHoursStr: String?
+        var marketHoursRaw: UInt64?
         var changePercent: Float?
         var dayVolume: Int64?
         var dayHigh: Float?
@@ -163,52 +163,41 @@ struct ProtobufDecoder {
         var change: Float?
         var shortName: String?
         var previousClose: Float?
-        var bid: Float?
-        var ask: Float?
-        var bidSize: Int64?
-        var askSize: Int64?
-        var marketCap: Int64?
+        var marketCap: Double?
 
         while !isAtEnd {
             let (fieldNumber, wireType) = try readTag()
 
-            switch fieldNumber {
-            case 1:
+            // Match on (field, wireType) to handle schema evolution safely.
+            switch (fieldNumber, wireType) {
+            case (1, 2):  // symbol (string)
                 symbol = try readString()
-            case 2:
+            case (2, 5):  // price (float)
                 price = try readFloat()
-            case 3:
-                timestamp = try readSInt64()
-            case 4:
+            case (3, 0):  // timestamp (varint, zigzag, milliseconds)
+                timestampMs = try readSInt64()
+            case (4, 2):  // currency (string)
                 currency = try readString()
-            case 5:
+            case (5, 2):  // exchange (string)
                 exchange = try readString()
-            case 6:
-                marketHoursStr = try readString()
-            case 7:
+            case (6, 0):  // market hours (varint enum)
+                marketHoursRaw = try readVarint()
+            case (8, 5):  // change percent (float)
                 changePercent = try readFloat()
-            case 8:
+            case (9, 0):  // day volume (varint, zigzag)
                 dayVolume = try readSInt64()
-            case 9:
+            case (10, 5): // day high (float)
                 dayHigh = try readFloat()
-            case 10:
+            case (11, 5): // day low (float)
                 dayLow = try readFloat()
-            case 11:
+            case (12, 5): // change (float)
                 change = try readFloat()
-            case 12:
-                shortName = try readString()
-            case 13:
+            case (15, 5): // previous close (float)
                 previousClose = try readFloat()
-            case 14:
-                bid = try readFloat()
-            case 15:
-                ask = try readFloat()
-            case 16:
-                bidSize = try readSInt64()
-            case 17:
-                askSize = try readSInt64()
-            case 18:
-                marketCap = try readSInt64()
+            case (30, 2): // short name (string)
+                shortName = try readString()
+            case (33, 1): // market cap (double)
+                marketCap = try readDouble()
             default:
                 try skipField(wireType: wireType)
             }
@@ -222,13 +211,13 @@ struct ProtobufDecoder {
         }
 
         let ts: Date
-        if let t = timestamp {
-            ts = Date(timeIntervalSince1970: TimeInterval(t))
+        if let ms = timestampMs {
+            ts = Date(timeIntervalSince1970: TimeInterval(ms) / 1000.0)
         } else {
             ts = Date()
         }
 
-        let hours: MarketHours? = marketHoursStr.flatMap { MarketHours(rawValue: $0) }
+        let hours: MarketHours? = marketHoursRaw.flatMap { MarketHours(protobufValue: $0) }
 
         return StreamQuote(
             symbol: sym,
@@ -243,11 +232,11 @@ struct ProtobufDecoder {
             dayLow: dayLow.map { Double($0) },
             change: change.map { Double($0) },
             previousClose: previousClose.map { Double($0) },
-            bid: bid.map { Double($0) },
-            ask: ask.map { Double($0) },
-            bidSize: bidSize,
-            askSize: askSize,
-            marketCap: marketCap,
+            bid: nil,
+            ask: nil,
+            bidSize: nil,
+            askSize: nil,
+            marketCap: marketCap.map { Int64($0) },
             shortName: shortName
         )
     }
