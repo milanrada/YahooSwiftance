@@ -3,6 +3,7 @@ import Foundation
 /// An actor wrapping URLSession with rate limiting for Yahoo Finance REST API calls.
 actor HTTPClient {
     private let session: URLSession
+    private let crumbManager: CrumbManager
     private let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)"
 
     // Token bucket rate limiter: ~2 requests/sec with burst up to 6.
@@ -13,14 +14,52 @@ actor HTTPClient {
     private var tokens: Double = 6
     private var lastRefill: Date = Date()
 
-    init(session: URLSession = .shared) {
+    init(session: URLSession, crumbManager: CrumbManager) {
         self.session = session
+        self.crumbManager = crumbManager
     }
 
     func fetch<T: Decodable>(_ type: T.Type, from endpoint: Endpoint) async throws -> T {
         try await waitForToken()
 
-        var request = URLRequest(url: endpoint.url)
+        let crumb = try await crumbManager.getCrumb()
+
+        var request = URLRequest(url: endpoint.url(crumb: crumb))
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw YahooFinanceError.unknown("Invalid response type")
+        }
+
+        // On auth-related errors, invalidate crumb and retry once
+        if [401, 403, 404].contains(httpResponse.statusCode) {
+            return try await retryWithFreshCrumb(type, endpoint: endpoint)
+        }
+
+        if httpResponse.statusCode == 429 {
+            throw YahooFinanceError.rateLimited
+        }
+
+        if !(200..<300).contains(httpResponse.statusCode) {
+            throw YahooFinanceError.httpError(statusCode: httpResponse.statusCode, data: data)
+        }
+
+        do {
+            let decoder = JSONDecoder()
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            throw YahooFinanceError.decodingError(underlying: error)
+        }
+    }
+
+    private func retryWithFreshCrumb<T: Decodable>(_ type: T.Type, endpoint: Endpoint) async throws -> T {
+        await crumbManager.invalidate()
+
+        let crumb = try await crumbManager.getCrumb()
+
+        var request = URLRequest(url: endpoint.url(crumb: crumb))
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
 
         let (data, response) = try await session.data(for: request)
@@ -33,7 +72,7 @@ actor HTTPClient {
         case 200..<300:
             break
         case 404:
-            throw YahooFinanceError.symbolNotFound(endpoint.url.path)
+            throw YahooFinanceError.symbolNotFound(endpoint.url(crumb: crumb).path)
         case 429:
             throw YahooFinanceError.rateLimited
         default:

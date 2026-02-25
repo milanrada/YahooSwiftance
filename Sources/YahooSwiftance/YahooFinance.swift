@@ -2,7 +2,7 @@ import Foundation
 import Synchronization
 
 /// The current semantic version of the YahooSwiftance library.
-public let version = "0.4.0"
+public let version = "0.5.0"
 
 /// The main entry point for the YahooSwiftance library.
 ///
@@ -26,10 +26,21 @@ public final class YahooFinance: Sendable {
 
     /// Creates a new `YahooFinance` instance.
     ///
-    /// - Parameter session: The `URLSession` to use for networking. Defaults to `.shared`.
-    public init(session: URLSession = .shared) {
-        self.httpClient = HTTPClient(session: session)
-        self.streamer = StockStreamer(session: session)
+    /// - Parameter session: The `URLSession` to use for networking.
+    ///   Defaults to a session with cookie storage enabled for Yahoo Finance authentication.
+    public init(session: URLSession? = nil) {
+        let resolvedSession: URLSession
+        if let session {
+            resolvedSession = session
+        } else {
+            let config = URLSessionConfiguration.ephemeral
+            config.httpCookieAcceptPolicy = .always
+            resolvedSession = URLSession(configuration: config)
+        }
+
+        let crumbManager = CrumbManager(session: resolvedSession)
+        self.httpClient = HTTPClient(session: resolvedSession, crumbManager: crumbManager)
+        self.streamer = StockStreamer(session: resolvedSession)
     }
 
     // MARK: - Streaming
