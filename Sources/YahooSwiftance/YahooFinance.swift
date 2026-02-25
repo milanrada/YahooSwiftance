@@ -2,7 +2,7 @@ import Foundation
 import Synchronization
 
 /// The current semantic version of the YahooSwiftance library.
-public let version = "0.5.0"
+public let version = "0.6.0"
 
 /// The main entry point for the YahooSwiftance library.
 ///
